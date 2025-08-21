@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat in Tempo Reale</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script type="module">
+        // Importa i moduli di Firebase necessari
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variabili globali fornite dall'ambiente
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        let db;
+        let auth;
+        let userId;
+
+        // Funzione per inizializzare Firebase e autenticarsi
+        async function initializeFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Autenticazione con token personalizzato o anonima
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                userId = auth.currentUser.uid;
+                console.log("Autenticazione Firebase riuscita. UID:", userId);
+
+                // Avvia l'app di chat solo dopo l'autenticazione
+                setupChatApp();
+
+            } catch (error) {
+                console.error("Errore nell'inizializzazione o autenticazione di Firebase:", error);
+                showNotification("Errore di connessione. Riprova più tardi.");
+            }
+        }
+
+        // Funzione per impostare l'applicazione di chat
+        function setupChatApp() {
+            const chatForm = document.getElementById('chat-form');
+            const messageInput = document.getElementById('message-input');
+            const usernameInput = document.getElementById('username-input');
+            const messagesContainer = document.getElementById('messages');
+            const userIdDisplay = document.getElementById('user-id-display');
+
+            // Mostra l'ID utente per la collaborazione
+            if (userId) {
+                userIdDisplay.textContent = `Il tuo ID utente: ${userId}`;
+                userIdDisplay.style.display = 'block';
+            }
+
+            // Aggiungi un listener per i messaggi in tempo reale
+            const q = query(collection(db, `/artifacts/${appId}/public/data/messages`), orderBy('timestamp'));
+
+            onSnapshot(q, (snapshot) => {
+                let messages = [];
+                snapshot.docChanges().forEach((change) => {
+                    if (change.type === "added") {
+                        messages.push({ id: change.doc.id, ...change.doc.data() });
+                    }
+                });
+
+                // Aggiungi i nuovi messaggi al DOM
+                messages.forEach(msg => {
+                    const messageElement = createMessageElement(msg);
+                    messagesContainer.appendChild(messageElement);
+                });
+
+                // Scorri automaticamente in fondo
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }, (error) => {
+                console.error("Errore nel ricevere gli aggiornamenti in tempo reale:", error);
+                showNotification("Errore nel caricamento dei messaggi.");
+            });
+
+            // Gestione dell'invio del messaggio
+            chatForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const messageText = messageInput.value.trim();
+                const username = usernameInput.value.trim() || 'Anonimo';
+
+                if (messageText) {
+                    try {
+                        const messageRef = collection(db, `/artifacts/${appId}/public/data/messages`);
+                        await addDoc(messageRef, {
+                            username: username,
+                            text: messageText,
+                            userId: userId,
+                            timestamp: serverTimestamp()
+                        });
+                        messageInput.value = ''; // Pulisci l'input
+                    } catch (error) {
+                        console.error("Errore nell'invio del messaggio:", error);
+                        showNotification("Impossibile inviare il messaggio. Riprova.");
+                    }
+                }
+            });
+
+            // Funzione helper per creare l'elemento del messaggio
+            function createMessageElement(message) {
+                const isUserMessage = message.userId === userId;
+                const messageDiv = document.createElement('div');
+                messageDiv.classList.add('message', isUserMessage ? 'sent' : 'received');
+
+                const nameSpan = document.createElement('span');
+                nameSpan.classList.add('username');
+                nameSpan.textContent = message.username;
+
+                const textP = document.createElement('p');
+                textP.textContent = message.text;
+
+                const timeSpan = document.createElement('span');
+                timeSpan.classList.add('timestamp');
+                if (message.timestamp) {
+                    const date = message.timestamp.toDate();
+                    timeSpan.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                }
+
+                messageDiv.appendChild(nameSpan);
+                messageDiv.appendChild(textP);
+                messageDiv.appendChild(timeSpan);
+
+                return messageDiv;
+            }
+        }
+
+        // Funzione per mostrare le notifiche
+        function showNotification(message) {
+            const notification = document.getElementById('notification-modal');
+            const messageText = document.getElementById('notification-message');
+            messageText.textContent = message;
+            notification.classList.remove('hidden');
+        }
+
+        // Gestisci la chiusura del modal di notifica
+        document.getElementById('close-modal').addEventListener('click', () => {
+            document.getElementById('notification-modal').classList.add('hidden');
+        });
+
+        // Avvia l'inizializzazione di Firebase
+        window.onload = initializeFirebase;
+
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: #1f2937;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 600px;
+            height: 80vh;
+            display: flex;
+            flex-direction: column;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            margin: 20px;
+        }
+
+        .chat-header {
+            background-color: #1d4ed8;
+            color: #fff;
+            padding: 1rem;
+            text-align: center;
+            border-bottom: 2px solid #2563eb;
+        }
+
+        .chat-header h1 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        #user-id-display {
+            display: none;
+            text-align: center;
+            font-size: 0.75rem;
+            color: #9ca3af;
+            margin-top: 0.5rem;
+            padding: 0 1rem;
+            word-wrap: break-word;
+        }
+
+        #messages {
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .message {
+            max-width: 80%;
+            padding: 0.75rem 1rem;
+            border-radius: 18px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+            line-height: 1.4;
+        }
+
+        .message.received {
+            background-color: #e5e7eb;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.sent {
+            background-color: #3b82f6;
+            color: #fff;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .username {
+            font-weight: 600;
+            display: block;
+            margin-bottom: 0.25rem;
+            font-size: 0.875rem;
+            color: #1d4ed8;
+        }
+
+        .sent .username {
+            color: #e5e7eb;
+        }
+
+        .timestamp {
+            display: block;
+            text-align: right;
+            font-size: 0.75rem;
+            color: #6b7280;
+            margin-top: 0.5rem;
+        }
+
+        .sent .timestamp {
+            color: #bfdbfe;
+        }
+
+        #chat-form {
+            display: flex;
+            padding: 1rem;
+            gap: 0.5rem;
+            border-top: 1px solid #e5e7eb;
+            background-color: #f9fafb;
+        }
+
+        #chat-form input, #chat-form button {
+            border: 1px solid #d1d5db;
+            border-radius: 9999px;
+            padding: 0.75rem 1.25rem;
+            font-size: 1rem;
+        }
+
+        #username-input {
+            width: 100px;
+        }
+
+        #message-input {
+            flex: 1;
+        }
+
+        #chat-form button {
+            background-color: #3b82f6;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.2s ease-in-out;
+            font-weight: 500;
+            width: 80px;
+        }
+
+        #chat-form button:hover {
+            background-color: #2563eb;
+        }
+
+        /* Modal di notifica */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background-color: #fff;
+            padding: 2rem;
+            border-radius: 8px;
+            text-align: center;
+            max-width: 400px;
+            position: relative;
+        }
+
+        .close-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #999;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>Chat in Tempo Reale</h1>
+        </div>
+        <div id="messages">
+            <!-- I messaggi saranno aggiunti qui dal JavaScript -->
+        </div>
+        <div id="user-id-display"></div>
+        <form id="chat-form">
+            <input type="text" id="username-input" placeholder="Il tuo nome" required>
+            <input type="text" id="message-input" placeholder="Scrivi un messaggio..." required>
+            <button type="submit">Invia</button>
+        </form>
+    </div>
+
+    <!-- Modal di Notifica -->
+    <div id="notification-modal" class="modal hidden">
+        <div class="modal-content">
+            <button id="close-modal" class="close-button">&times;</button>
+            <p id="notification-message"></p>
+        </div>
+    </div>
+</body>
+</html>
