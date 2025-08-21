@@ -17,6 +17,7 @@ const App = () => {
   const messagesEndRef = useRef(null); // Ref to automatically scroll to the latest message.
   const userNameInputRef = useRef(null); // Ref for the user name input.
   const [showUserNameModal, setShowUserNameModal] = useState(true); // State to control the user name modal.
+  const [showRuleWarning, setShowRuleWarning] = useState(false); // State to control the security rule warning.
 
   // Get Firebase configuration and app ID from the environment.
   const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -81,8 +82,14 @@ const App = () => {
         setMessages(fetchedMessages);
         // Scroll to the latest message after fetching new data.
         scrollToBottom();
+        // Hide the warning if data is successfully fetched.
+        setShowRuleWarning(false);
       }, (error) => {
         console.error("Failed to fetch messages:", error);
+        // If there's an error, likely due to security rules, show a warning.
+        if (error.code === 'permission-denied') {
+          setShowRuleWarning(true);
+        }
       });
 
       // Cleanup the Firestore listener when the component unmounts or dependencies change.
@@ -181,6 +188,23 @@ const App = () => {
             ID Utente: <span className="font-mono text-gray-300 break-all">{userId}</span>
           </div>
         </div>
+
+        {/* Security Rule Warning */}
+        {showRuleWarning && (
+          <div className="bg-red-800 text-white p-4 rounded-lg mb-4 text-center shadow-lg">
+            ⚠️ Potrebbe esserci un problema con le regole di sicurezza di Firebase. Assicurati che le regole permettano la lettura e la scrittura a tutti gli utenti autenticati.
+            <pre className="mt-2 text-left bg-red-900 p-2 rounded-md overflow-x-auto">
+              {`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/{appId}/public/data/chat_messages/{docId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}`}
+            </pre>
+          </div>
+        )}
 
         {/* Message List Area */}
         <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
