@@ -13,7 +13,8 @@
         import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Variabili globali fornite dall'ambiente
+        // Variabili globali fornite dall'ambiente.
+        // Se non sono disponibili, vengono usati valori di fallback.
         const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -29,7 +30,8 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // Autenticazione con token personalizzato o anonima
+                // Autenticazione con token personalizzato se disponibile (per l'ambiente Canvas),
+                // altrimenti usa l'autenticazione anonima per il normale funzionamento.
                 if (initialAuthToken) {
                     await signInWithCustomToken(auth, initialAuthToken);
                 } else {
@@ -62,7 +64,10 @@
                 userIdDisplay.style.display = 'block';
             }
 
-            // Aggiungi un listener per i messaggi in tempo reale
+            // Aggiungi un listener per i messaggi in tempo reale.
+            // Nota: L'uso di orderBy() richiede che le regole di sicurezza di Firestore siano configurate per consentirlo.
+            // Per maggiore sicurezza, è consigliabile ordinare i messaggi in memoria dopo averli recuperati,
+            // se le prestazioni lo consentono.
             const q = query(collection(db, `/artifacts/${appId}/public/data/messages`), orderBy('timestamp'));
 
             onSnapshot(q, (snapshot) => {
