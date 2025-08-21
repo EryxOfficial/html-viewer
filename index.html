@@ -1,364 +1,255 @@
-<!DOCTYPE html>
-<html lang="it">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat in Tempo Reale</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
-    <script type="module">
-        // Importa i moduli di Firebase necessari
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, query, orderBy, onSnapshot, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
+import { getFirestore, doc, collection, onSnapshot, query, orderBy, serverTimestamp, addDoc } from 'firebase/firestore';
 
-        // Variabili globali fornite dall'ambiente.
-        // Se non sono disponibili, vengono usati valori di fallback.
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// Define the root App component for the chat application.
+// This component manages the Firebase connection, authentication, and chat state.
+const App = () => {
+  // State variables for managing the application's data.
+  const [messages, setMessages] = useState([]); // Stores the list of chat messages.
+  const [newMessage, setNewMessage] = useState(''); // Stores the message currently being typed.
+  const [userName, setUserName] = useState(''); // Stores the user's chosen display name.
+  const [db, setDb] = useState(null); // Firebase Firestore instance.
+  const [auth, setAuth] = useState(null); // Firebase Auth instance.
+  const [userId, setUserId] = useState(null); // The current user's unique ID.
+  const [isLoading, setIsLoading] = useState(true); // Loading state for authentication and data fetching.
+  const messagesEndRef = useRef(null); // Ref to automatically scroll to the latest message.
+  const userNameInputRef = useRef(null); // Ref for the user name input.
+  const [showUserNameModal, setShowUserNameModal] = useState(true); // State to control the user name modal.
 
-        let db;
-        let auth;
-        let userId;
+  // Get Firebase configuration and app ID from the environment.
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+  const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        // Funzione per inizializzare Firebase e autenticarsi
-        async function initializeFirebase() {
-            try {
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
+  // UseEffect for Firebase initialization and authentication.
+  // This runs once when the component mounts.
+  useEffect(() => {
+    const initFirebase = async () => {
+      try {
+        // Initialize Firebase app.
+        const app = initializeApp(firebaseConfig);
+        const firestoreDb = getFirestore(app);
+        const firestoreAuth = getAuth(app);
+        setDb(firestoreDb);
+        setAuth(firestoreAuth);
 
-                // Autenticazione con token personalizzato se disponibile (per l'ambiente Canvas),
-                // altrimenti usa l'autenticazione anonima per il normale funzionamento.
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
-
-                userId = auth.currentUser.uid;
-                console.log("Autenticazione Firebase riuscita. UID:", userId);
-
-                // Avvia l'app di chat solo dopo l'autenticazione
-                setupChatApp();
-
-            } catch (error) {
-                console.error("Errore nell'inizializzazione o autenticazione di Firebase:", error);
-                showNotification("Errore di connessione. Riprova più tardi.");
-            }
+        // Sign in the user using the provided custom token or anonymously.
+        if (initialAuthToken) {
+          await signInWithCustomToken(firestoreAuth, initialAuthToken);
+        } else {
+          await signInAnonymously(firestoreAuth);
         }
-
-        // Funzione per impostare l'applicazione di chat
-        function setupChatApp() {
-            const chatForm = document.getElementById('chat-form');
-            const messageInput = document.getElementById('message-input');
-            const usernameInput = document.getElementById('username-input');
-            const messagesContainer = document.getElementById('messages');
-            const userIdDisplay = document.getElementById('user-id-display');
-
-            // Mostra l'ID utente per la collaborazione
-            if (userId) {
-                userIdDisplay.textContent = `Il tuo ID utente: ${userId}`;
-                userIdDisplay.style.display = 'block';
-            }
-
-            // Aggiungi un listener per i messaggi in tempo reale.
-            // Nota: L'uso di orderBy() richiede che le regole di sicurezza di Firestore siano configurate per consentirlo.
-            // Per maggiore sicurezza, è consigliabile ordinare i messaggi in memoria dopo averli recuperati,
-            // se le prestazioni lo consentono.
-            const q = query(collection(db, `/artifacts/${appId}/public/data/messages`), orderBy('timestamp'));
-
-            onSnapshot(q, (snapshot) => {
-                let messages = [];
-                snapshot.docChanges().forEach((change) => {
-                    if (change.type === "added") {
-                        messages.push({ id: change.doc.id, ...change.doc.data() });
-                    }
-                });
-
-                // Aggiungi i nuovi messaggi al DOM
-                messages.forEach(msg => {
-                    const messageElement = createMessageElement(msg);
-                    messagesContainer.appendChild(messageElement);
-                });
-
-                // Scorri automaticamente in fondo
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            }, (error) => {
-                console.error("Errore nel ricevere gli aggiornamenti in tempo reale:", error);
-                showNotification("Errore nel caricamento dei messaggi.");
-            });
-
-            // Gestione dell'invio del messaggio
-            chatForm.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const messageText = messageInput.value.trim();
-                const username = usernameInput.value.trim() || 'Anonimo';
-
-                if (messageText) {
-                    try {
-                        const messageRef = collection(db, `/artifacts/${appId}/public/data/messages`);
-                        await addDoc(messageRef, {
-                            username: username,
-                            text: messageText,
-                            userId: userId,
-                            timestamp: serverTimestamp()
-                        });
-                        messageInput.value = ''; // Pulisci l'input
-                    } catch (error) {
-                        console.error("Errore nell'invio del messaggio:", error);
-                        showNotification("Impossibile inviare il messaggio. Riprova.");
-                    }
-                }
-            });
-
-            // Funzione helper per creare l'elemento del messaggio
-            function createMessageElement(message) {
-                const isUserMessage = message.userId === userId;
-                const messageDiv = document.createElement('div');
-                messageDiv.classList.add('message', isUserMessage ? 'sent' : 'received');
-
-                const nameSpan = document.createElement('span');
-                nameSpan.classList.add('username');
-                nameSpan.textContent = message.username;
-
-                const textP = document.createElement('p');
-                textP.textContent = message.text;
-
-                const timeSpan = document.createElement('span');
-                timeSpan.classList.add('timestamp');
-                if (message.timestamp) {
-                    const date = message.timestamp.toDate();
-                    timeSpan.textContent = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                }
-
-                messageDiv.appendChild(nameSpan);
-                messageDiv.appendChild(textP);
-                messageDiv.appendChild(timeSpan);
-
-                return messageDiv;
-            }
-        }
-
-        // Funzione per mostrare le notifiche
-        function showNotification(message) {
-            const notification = document.getElementById('notification-modal');
-            const messageText = document.getElementById('notification-message');
-            messageText.textContent = message;
-            notification.classList.remove('hidden');
-        }
-
-        // Gestisci la chiusura del modal di notifica
-        document.getElementById('close-modal').addEventListener('click', () => {
-            document.getElementById('notification-modal').classList.add('hidden');
+        
+        // Listen for authentication state changes.
+        const unsubscribeAuth = firestoreAuth.onAuthStateChanged(user => {
+          if (user) {
+            setUserId(user.uid);
+            setIsLoading(false);
+          } else {
+            setUserId(null);
+            setIsLoading(false);
+          }
         });
 
-        // Avvia l'inizializzazione di Firebase
-        window.onload = initializeFirebase;
+        // Cleanup the auth listener when the component unmounts.
+        return () => unsubscribeAuth();
+      } catch (e) {
+        console.error("Firebase initialization failed:", e);
+        setIsLoading(false);
+      }
+    };
+    initFirebase();
+  }, []); // Empty dependency array ensures this runs only once.
 
-    </script>
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            color: #1f2937;
-        }
+  // UseEffect for real-time Firestore data fetching.
+  // This runs whenever `db` or `userId` changes.
+  useEffect(() => {
+    if (db && userId) {
+      // Define the collection path for public chat messages.
+      const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/chat_messages`);
+      // Create a query to order messages by timestamp.
+      const messagesQuery = query(messagesCollectionRef, orderBy('timestamp', 'asc'));
 
-        .chat-container {
-            width: 100%;
-            max-width: 600px;
-            height: 80vh;
-            display: flex;
-            flex-direction: column;
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-            margin: 20px;
-        }
+      // Use onSnapshot to listen for real-time updates.
+      const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+        const fetchedMessages = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setMessages(fetchedMessages);
+        // Scroll to the latest message after fetching new data.
+        scrollToBottom();
+      }, (error) => {
+        console.error("Failed to fetch messages:", error);
+      });
 
-        .chat-header {
-            background-color: #1d4ed8;
-            color: #fff;
-            padding: 1rem;
-            text-align: center;
-            border-bottom: 2px solid #2563eb;
-        }
+      // Cleanup the Firestore listener when the component unmounts or dependencies change.
+      return () => unsubscribe();
+    }
+  }, [db, userId, appId]); // Dependencies trigger re-run when they change.
 
-        .chat-header h1 {
-            margin: 0;
-            font-size: 1.5rem;
-        }
+  // Function to scroll the message list to the bottom.
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
 
-        #user-id-display {
-            display: none;
-            text-align: center;
-            font-size: 0.75rem;
-            color: #9ca3af;
-            margin-top: 0.5rem;
-            padding: 0 1rem;
-            word-wrap: break-word;
-        }
+  // Function to handle sending a new message.
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    // Validate that the message is not empty and the user has a name.
+    if (newMessage.trim() === '' || userName.trim() === '' || !db || !userId) {
+      // Show a simple error message or use a custom modal.
+      console.error("Message or user name is empty.");
+      return;
+    }
 
-        #messages {
-            flex: 1;
-            padding: 1rem;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-        }
+    try {
+      // Add a new document to the Firestore collection.
+      const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/chat_messages`);
+      await addDoc(messagesCollectionRef, {
+        text: newMessage,
+        timestamp: serverTimestamp(), // Use server timestamp for consistency.
+        userId: userId,
+        userName: userName,
+      });
 
-        .message {
-            max-width: 80%;
-            padding: 0.75rem 1rem;
-            border-radius: 18px;
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-            line-height: 1.4;
-        }
+      // Clear the message input field after sending.
+      setNewMessage('');
+    } catch (e) {
+      console.error("Error adding document: ", e);
+    }
+  };
 
-        .message.received {
-            background-color: #e5e7eb;
-            align-self: flex-start;
-            border-bottom-left-radius: 4px;
-        }
+  // Function to save the user's chosen name and close the modal.
+  const handleSaveName = () => {
+    if (userName.trim() !== '') {
+      setShowUserNameModal(false);
+    } else {
+      userNameInputRef.current.focus();
+    }
+  };
 
-        .message.sent {
-            background-color: #3b82f6;
-            color: #fff;
-            align-self: flex-end;
-            border-bottom-right-radius: 4px;
-        }
+  // Render a loading spinner while the app is initializing.
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-gray-100">
+        <svg className="animate-spin -ml-1 mr-3 h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span>Caricamento chat...</span>
+      </div>
+    );
+  }
 
-        .username {
-            font-weight: 600;
-            display: block;
-            margin-bottom: 0.25rem;
-            font-size: 0.875rem;
-            color: #1d4ed8;
-        }
-
-        .sent .username {
-            color: #e5e7eb;
-        }
-
-        .timestamp {
-            display: block;
-            text-align: right;
-            font-size: 0.75rem;
-            color: #6b7280;
-            margin-top: 0.5rem;
-        }
-
-        .sent .timestamp {
-            color: #bfdbfe;
-        }
-
-        #chat-form {
-            display: flex;
-            padding: 1rem;
-            gap: 0.5rem;
-            border-top: 1px solid #e5e7eb;
-            background-color: #f9fafb;
-        }
-
-        #chat-form input, #chat-form button {
-            border: 1px solid #d1d5db;
-            border-radius: 9999px;
-            padding: 0.75rem 1.25rem;
-            font-size: 1rem;
-        }
-
-        #username-input {
-            width: 100px;
-        }
-
-        #message-input {
-            flex: 1;
-        }
-
-        #chat-form button {
-            background-color: #3b82f6;
-            color: white;
-            cursor: pointer;
-            transition: background-color 0.2s ease-in-out;
-            font-weight: 500;
-            width: 80px;
-        }
-
-        #chat-form button:hover {
-            background-color: #2563eb;
-        }
-
-        /* Modal di notifica */
-        .modal {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-
-        .modal-content {
-            background-color: #fff;
-            padding: 2rem;
-            border-radius: 8px;
-            text-align: center;
-            max-width: 400px;
-            position: relative;
-        }
-
-        .close-button {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background: none;
-            border: none;
-            font-size: 1.5rem;
-            cursor: pointer;
-            color: #999;
-        }
-
-        .hidden {
-            display: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="chat-container">
-        <div class="chat-header">
-            <h1>Chat in Tempo Reale</h1>
+  // Main UI of the chat application.
+  return (
+    <div className="flex flex-col h-screen font-inter bg-gray-950 text-gray-100">
+      {/* User Name Modal */}
+      {showUserNameModal && (
+        <div className="absolute inset-0 flex items-center justify-center z-50 bg-black bg-opacity-70">
+          <div className="bg-gray-800 p-8 rounded-xl shadow-2xl max-w-sm w-full">
+            <h2 className="text-2xl font-bold mb-4 text-center text-gray-100">Benvenuto nella Chat</h2>
+            <p className="text-gray-400 mb-6 text-center">Inserisci il tuo nome per iniziare a chattare.</p>
+            <input
+              ref={userNameInputRef}
+              type="text"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              placeholder="Il tuo nome..."
+              className="w-full p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onKeyPress={(e) => { if (e.key === 'Enter') handleSaveName(); }}
+            />
+            <button
+              onClick={handleSaveName}
+              className="mt-6 w-full py-3 px-4 rounded-lg bg-blue-600 text-white font-semibold shadow-lg hover:bg-blue-700 transition-colors duration-300"
+            >
+              Entra nella Chat
+            </button>
+          </div>
         </div>
-        <div id="messages">
-            <!-- I messaggi saranno aggiunti qui dal JavaScript -->
+      )}
+
+      {/* Main Chat Container */}
+      <div className={`flex flex-col flex-grow p-4 overflow-hidden ${showUserNameModal ? 'filter blur-sm' : ''}`}>
+        {/* Header with user info */}
+        <div className="flex justify-between items-center pb-4 border-b border-gray-700 mb-4">
+          <h1 className="text-3xl font-extrabold text-white">Chat in Tempo Reale</h1>
+          <div className="text-sm text-gray-400">
+            ID Utente: <span className="font-mono text-gray-300 break-all">{userId}</span>
+          </div>
         </div>
-        <div id="user-id-display"></div>
-        <form id="chat-form">
-            <input type="text" id="username-input" placeholder="Il tuo nome" required>
-            <input type="text" id="message-input" placeholder="Scrivi un messaggio..." required>
-            <button type="submit">Invia</button>
+
+        {/* Message List Area */}
+        <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`flex ${msg.userId === userId ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`p-4 rounded-xl shadow-lg max-w-sm lg:max-w-md ${
+                  msg.userId === userId
+                    ? 'bg-blue-600 text-white rounded-br-sm'
+                    : 'bg-gray-700 text-gray-100 rounded-bl-sm'
+                }`}
+              >
+                <div className={`font-semibold text-sm mb-1 ${msg.userId === userId ? 'text-gray-200' : 'text-gray-400'}`}>
+                  {msg.userName}
+                </div>
+                <div className="text-base break-words">
+                  {msg.text}
+                </div>
+              </div>
+            </div>
+          ))}
+          {/* Invisible div to scroll to the bottom */}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Message Input Form */}
+        <form onSubmit={handleSendMessage} className="mt-4 flex gap-2">
+          <input
+            type="text"
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            placeholder="Scrivi un messaggio..."
+            className="flex-1 p-3 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={!userName.trim()}
+          />
+          <button
+            type="submit"
+            className="p-3 bg-blue-600 text-white rounded-lg shadow-lg hover:bg-blue-700 transition-colors duration-300 disabled:bg-gray-600 disabled:cursor-not-allowed"
+            disabled={!userName.trim()}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 transform rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+            </svg>
+          </button>
         </form>
-    </div>
+      </div>
 
-    <!-- Modal di Notifica -->
-    <div id="notification-modal" class="modal hidden">
-        <div class="modal-content">
-            <button id="close-modal" class="close-button">&times;</button>
-            <p id="notification-message"></p>
-        </div>
+      <style jsx>{`
+        .custom-scrollbar {
+          scrollbar-width: thin; /* Firefox */
+          scrollbar-color: #4a5568 #2d3748; /* Firefox */
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 8px; /* Chrome, Safari, Opera */
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: #1a202c; /* Chrome, Safari, Opera */
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background-color: #4a5568; /* Chrome, Safari, Opera */
+          border-radius: 4px; /* Chrome, Safari, Opera */
+          border: 2px solid #1a202c; /* Chrome, Safari, Opera */
+        }
+      `}</style>
     </div>
-</body>
-</html>
+  );
+};
+
+export default App;
