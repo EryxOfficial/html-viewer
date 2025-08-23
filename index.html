@@ -1,279 +1,181 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
-import { getFirestore, doc, collection, onSnapshot, query, orderBy, serverTimestamp, addDoc } from 'firebase/firestore';
+import React, { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
 
-// Define the root App component for the chat application.
-// This component manages the Firebase connection, authentication, and chat state.
-const App = () => {
-  // State variables for managing the application's data.
-  const [messages, setMessages] = useState([]); // Stores the list of chat messages.
-  const [newMessage, setNewMessage] = useState(''); // Stores the message currently being typed.
-  const [userName, setUserName] = useState(''); // Stores the user's chosen display name.
-  const [db, setDb] = useState(null); // Firebase Firestore instance.
-  const [auth, setAuth] = useState(null); // Firebase Auth instance.
-  const [userId, setUserId] = useState(null); // The current user's unique ID.
-  const [isLoading, setIsLoading] = useState(true); // Loading state for authentication and data fetching.
-  const messagesEndRef = useRef(null); // Ref to automatically scroll to the latest message.
-  const userNameInputRef = useRef(null); // Ref for the user name input.
-  const [showUserNameModal, setShowUserNameModal] = useState(true); // State to control the user name modal.
-  const [showRuleWarning, setShowRuleWarning] = useState(false); // State to control the security rule warning.
+/**
+ * ⚡ Chat App - React + P2P (senza server, senza costi)
+ * - Usa WebRTC + un server pubblico gratuito di signaling (peerjs free cloud)
+ * - Tutta la comunicazione passa peer-to-peer, senza dover gestire backend proprio
+ * - Supporto nickname
+ * - Stanza unica
+ *
+ * 👉 ISTRUZIONI:
+ * 1) Non serve backend! PeerJS usa un server di signaling pubblico gratuito
+ * 2) Deploya questo frontend su Vercel/Netlify
+ */
 
-  // Get Firebase configuration and app ID from the environment.
-  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-  const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+import Peer from "peerjs";
 
-  // UseEffect for Firebase initialization and authentication.
-  // This runs once when the component mounts.
-  useEffect(() => {
-    const initFirebase = async () => {
-      try {
-        // Initialize Firebase app.
-        const app = initializeApp(firebaseConfig);
-        const firestoreDb = getFirestore(app);
-        const firestoreAuth = getAuth(app);
-        setDb(firestoreDb);
-        setAuth(firestoreAuth);
+const formatTime = (date) =>
+  date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-        // Sign in the user using the provided custom token or anonymously.
-        if (initialAuthToken) {
-          await signInWithCustomToken(firestoreAuth, initialAuthToken);
-        } else {
-          await signInAnonymously(firestoreAuth);
-        }
-        
-        // Listen for authentication state changes.
-        const unsubscribeAuth = firestoreAuth.onAuthStateChanged(user => {
-          if (user) {
-            setUserId(user.uid);
-            setIsLoading(false);
-          } else {
-            setUserId(null);
-            setIsLoading(false);
-          }
-        });
-
-        // Cleanup the auth listener when the component unmounts.
-        return () => unsubscribeAuth();
-      } catch (e) {
-        console.error("Firebase initialization failed:", e);
-        setIsLoading(false);
-      }
-    };
-    initFirebase();
-  }, []); // Empty dependency array ensures this runs only once.
-
-  // UseEffect for real-time Firestore data fetching.
-  // This runs whenever `db` or `userId` changes.
-  useEffect(() => {
-    if (db && userId) {
-      // Define the collection path for public chat messages.
-      const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/chat_messages`);
-      // Create a query to order messages by timestamp.
-      const messagesQuery = query(messagesCollectionRef, orderBy('timestamp', 'asc'));
-
-      // Use onSnapshot to listen for real-time updates.
-      const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
-        const fetchedMessages = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setMessages(fetchedMessages);
-        // Scroll to the latest message after fetching new data.
-        scrollToBottom();
-        // Hide the warning if data is successfully fetched.
-        setShowRuleWarning(false);
-      }, (error) => {
-        console.error("Failed to fetch messages:", error);
-        // If there's an error, likely due to security rules, show a warning.
-        if (error.code === 'permission-denied') {
-          setShowRuleWarning(true);
-        }
-      });
-
-      // Cleanup the Firestore listener when the component unmounts or dependencies change.
-      return () => unsubscribe();
-    }
-  }, [db, userId, appId]); // Dependencies trigger re-run when they change.
-
-  // Function to scroll the message list to the bottom.
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  // Function to handle sending a new message.
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    // Validate that the message is not empty and the user has a name.
-    if (newMessage.trim() === '' || userName.trim() === '' || !db || !userId) {
-      // Show a simple error message or use a custom modal.
-      console.error("Message or user name is empty.");
-      return;
-    }
-
-    try {
-      // Add a new document to the Firestore collection.
-      const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/chat_messages`);
-      await addDoc(messagesCollectionRef, {
-        text: newMessage,
-        timestamp: serverTimestamp(), // Use server timestamp for consistency.
-        userId: userId,
-        userName: userName,
-      });
-
-      // Clear the message input field after sending.
-      setNewMessage('');
-    } catch (e) {
-      console.error("Error adding document: ", e);
-    }
-  };
-
-  // Function to save the user's chosen name and close the modal.
-  const handleSaveName = () => {
-    if (userName.trim() !== '') {
-      setShowUserNameModal(false);
-    } else {
-      userNameInputRef.current.focus();
-    }
-  };
-
-  // Render a loading spinner while the app is initializing.
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-gray-100">
-        <svg className="animate-spin -ml-1 mr-3 h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-        <span>Caricamento chat...</span>
-      </div>
-    );
-  }
-
-  // Main UI of the chat application.
+function Message({ me, msg }) {
+  const isMine = me && msg.id === me;
   return (
-    <div className="flex flex-col h-screen font-inter bg-gray-950 text-gray-100">
-      {/* User Name Modal */}
-      {showUserNameModal && (
-        <div className="absolute inset-0 flex items-center justify-center z-50 bg-black bg-opacity-70">
-          <div className="bg-gray-800 p-8 rounded-xl shadow-2xl max-w-sm w-full">
-            <h2 className="text-2xl font-bold mb-4 text-center text-gray-100">Benvenuto nella Chat</h2>
-            <p className="text-gray-400 mb-6 text-center">Inserisci il tuo nome per iniziare a chattare.</p>
-            <input
-              ref={userNameInputRef}
-              type="text"
-              value={userName}
-              onChange={(e) => setUserName(e.target.value)}
-              placeholder="Il tuo nome..."
-              className="w-full p-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              onKeyPress={(e) => { if (e.key === 'Enter') handleSaveName(); }}
-            />
-            <button
-              onClick={handleSaveName}
-              className="mt-6 w-full py-3 px-4 rounded-lg bg-blue-600 text-white font-semibold shadow-lg hover:bg-blue-700 transition-colors duration-300"
-            >
-              Entra nella Chat
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Chat Container */}
-      <div className={`flex flex-col flex-grow p-4 overflow-hidden ${showUserNameModal ? 'filter blur-sm' : ''}`}>
-        {/* Header with user info */}
-        <div className="flex justify-between items-center pb-4 border-b border-gray-700 mb-4">
-          <h1 className="text-3xl font-extrabold text-white">Chat in Tempo Reale</h1>
-          <div className="text-sm text-gray-400">
-            ID Utente: <span className="font-mono text-gray-300 break-all">{userId}</span>
-          </div>
-        </div>
-
-        {/* Security Rule Warning */}
-        {showRuleWarning && (
-          <div className="bg-red-800 text-white p-4 rounded-lg mb-4 text-center shadow-lg">
-            ⚠️ Potrebbe esserci un problema con le regole di sicurezza di Firebase. Assicurati che le regole permettano la lettura e la scrittura a tutti gli utenti autenticati.
-            <pre className="mt-2 text-left bg-red-900 p-2 rounded-md overflow-x-auto">
-              {`rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /artifacts/{appId}/public/data/chat_messages/{docId} {
-      allow read, write: if request.auth != null;
-    }
-  }
-}`}
-            </pre>
+    <div className={`flex ${isMine ? "justify-end" : "justify-start"} w-full`}>
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={`max-w-[80%] rounded-2xl px-4 py-2 shadow-sm mb-2 ${
+          isMine ? "bg-gray-900 text-white" : "bg-white text-gray-900"
+        }`}
+      >
+        {!isMine && (
+          <div className="text-xs font-medium text-gray-500 mb-0.5">
+            {msg.name || "Anon"}
           </div>
         )}
-
-        {/* Message List Area */}
-        <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex ${msg.userId === userId ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`p-4 rounded-xl shadow-lg max-w-sm lg:max-w-md ${
-                  msg.userId === userId
-                    ? 'bg-blue-600 text-white rounded-br-sm'
-                    : 'bg-gray-700 text-gray-100 rounded-bl-sm'
-                }`}
-              >
-                <div className={`font-semibold text-sm mb-1 ${msg.userId === userId ? 'text-gray-200' : 'text-gray-400'}`}>
-                  {msg.userName}
-                </div>
-                <div className="text-base break-words">
-                  {msg.text}
-                </div>
-              </div>
-            </div>
-          ))}
-          {/* Invisible div to scroll to the bottom */}
-          <div ref={messagesEndRef} />
+        <div className="whitespace-pre-wrap break-words">{msg.text}</div>
+        <div className="text-[10px] opacity-60 mt-1 text-right">
+          {msg.time ? formatTime(new Date(msg.time)) : "…"}
         </div>
-
-        {/* Message Input Form */}
-        <form onSubmit={handleSendMessage} className="mt-4 flex gap-2">
-          <input
-            type="text"
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            placeholder="Scrivi un messaggio..."
-            className="flex-1 p-3 rounded-lg bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            disabled={!userName.trim()}
-          />
-          <button
-            type="submit"
-            className="p-3 bg-blue-600 text-white rounded-lg shadow-lg hover:bg-blue-700 transition-colors duration-300 disabled:bg-gray-600 disabled:cursor-not-allowed"
-            disabled={!userName.trim()}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 transform rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-            </svg>
-          </button>
-        </form>
-      </div>
-
-      <style jsx>{`
-        .custom-scrollbar {
-          scrollbar-width: thin; /* Firefox */
-          scrollbar-color: #4a5568 #2d3748; /* Firefox */
-        }
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px; /* Chrome, Safari, Opera */
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: #1a202c; /* Chrome, Safari, Opera */
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background-color: #4a5568; /* Chrome, Safari, Opera */
-          border-radius: 4px; /* Chrome, Safari, Opera */
-          border: 2px solid #1a202c; /* Chrome, Safari, Opera */
-        }
-      `}</style>
+      </motion.div>
     </div>
   );
-};
+}
 
-export default App;
+export default function App() {
+  const [peer, setPeer] = useState(null);
+  const [conn, setConn] = useState(null);
+  const [id, setId] = useState(() => Math.random().toString(36).substring(2, 9));
+  const [nickname, setNickname] = useState("");
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState([]);
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    const p = new Peer(id, { host: "0.peerjs.com", port: 443, secure: true });
+    setPeer(p);
+
+    p.on("connection", (c) => {
+      setConn(c);
+      c.on("data", (msg) => {
+        setMessages((prev) => [...prev, msg]);
+        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 0);
+      });
+    });
+
+    return () => p.destroy();
+  }, []);
+
+  const connectTo = (otherId) => {
+    if (!peer) return;
+    const c = peer.connect(otherId);
+    setConn(c);
+    c.on("data", (msg) => {
+      setMessages((prev) => [...prev, msg]);
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 0);
+    });
+  };
+
+  const sendMessage = () => {
+    if (!input.trim() || !conn) return;
+    const msg = {
+      id,
+      name: nickname || "Anon",
+      text: input.trim(),
+      time: Date.now(),
+    };
+    conn.send(msg);
+    setMessages((prev) => [...prev, msg]);
+    setInput("");
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 text-gray-900">
+      <div className="max-w-3xl mx-auto p-4">
+        {/* Header */}
+        <header className="flex items-center justify-between py-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">⚡ Live Chat P2P</h1>
+            <p className="text-sm text-gray-500">React + PeerJS • Gratis senza server</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              className="px-3 py-2 rounded-xl border border-gray-300 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
+              placeholder="Nickname"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+            />
+            <div className="px-3 py-2 rounded-xl border border-gray-300 bg-white shadow-sm text-sm">
+              ID: {id}
+            </div>
+          </div>
+        </header>
+
+        {/* Connect */}
+        <div className="mb-3 flex gap-2 items-center">
+          <input
+            placeholder="ID amico..."
+            className="px-3 py-2 rounded-xl border border-gray-300 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") connectTo(e.target.value);
+            }}
+          />
+          <span className="text-xs text-gray-400">(inserisci ID amico e premi invio)</span>
+        </div>
+
+        {/* Chat card */}
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+          <div className="h-[60vh] overflow-y-auto p-4 bg-[length:16px_16px] bg-[radial-gradient(circle,#f2f2f2_1px,transparent_1px)]">
+            {messages.length === 0 && (
+              <div className="h-full w-full flex items-center justify-center text-gray-400">
+                Nessun messaggio. Condividi il tuo ID con un amico ✨
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <Message key={i} me={id} msg={m} />
+            ))}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Composer */}
+          <div className="border-t border-gray-200 p-3 bg-white">
+            <div className="flex items-end gap-2">
+              <textarea
+                className="flex-1 resize-none rounded-2xl border border-gray-300 bg-white p-3 shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300 max-h-40"
+                placeholder="Scrivi un messaggio… (Invio per inviare)"
+                rows={2}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+              />
+              <button
+                onClick={sendMessage}
+                disabled={!input.trim() || !conn}
+                className={`px-4 py-2 rounded-2xl font-medium shadow-sm transition ${
+                  input.trim() && conn
+                    ? "bg-gray-900 text-white hover:opacity-90"
+                    : "bg-gray-200 text-gray-500 cursor-not-allowed"
+                }`}
+              >
+                Invia
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="text-center text-xs text-gray-400 mt-4">
+          Realizzato con React, Tailwind e PeerJS (free cloud). Nessun server da gestire. 🎉
+        </div>
+      </div>
+    </div>
+  );
+}
